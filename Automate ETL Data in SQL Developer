@@ -1,0 +1,320 @@
+import cx_Oracle
+# Define connection
+HOST='10.0.65.46'
+PORT='1521'
+SERVICE_NAME='ALM'
+USERNAME='username'
+PASSWORD='password'
+db_dsn = cx_Oracle.makedsn('10.0.65.46', '1521', service_name='ALM')
+
+# Establish a connection to the Oracle database
+connection = cx_Oracle.connect(USERNAME, PASSWORD, db_dsn)
+# Create a cursor to execute SQL queries
+cursor = connection.cursor()
+
+# INSERT DATA VÀO BẢNG HUYDONG_DF
+# Write your SQL query
+sql_query  = """
+INSERT INTO HUYDONG_DF (REPORTING_DATE, YEAR, MONTH, DAY, BRANCH, BUSINESS_LINE, CURRENCY, TERM, OUTS_PRINC_CNV, TARGET)
+WITH A AS(
+    SELECT 
+        SYM_RUN_DATE, CN AS BRANCH_NO, LOAI_KHACHHANG AS BUSINESS_LINE, 
+        CASE WHEN LOAI_KYHAN <> 'KKH' THEN 'CKH' ELSE 'KKH' END AS TERM, 
+        LOAI_TIEN AS CURRENCY, SODU_QD AS AMOUNT
+    FROM kmdw.bcqt_huydong
+    WHERE SYM_RUN_DATE = (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)),
+B AS (
+    SELECT 
+        SYM_RUN_DATE, BRANCH_NO, BUSINESS_LINE, TERM, CURRENCY, SUM(AMOUNT) AS AMOUNT
+    FROM A
+    GROUP BY SYM_RUN_DATE, BRANCH_NO, BUSINESS_LINE, TERM, CURRENCY
+    UNION ALL 
+    SELECT 
+        a.SYM_RUN_DATE, CN AS BRANCH_NO , LOAI_KHACHHANG, 'CKH' AS TERM, LOAI_TIEN AS CURRENCY, SODU_QD * RATE * -1 AS AMOUNT
+    FROM kmdw.bcqt_huydong a
+    JOIN BCQT_TT_CS_HUYDONG b
+    ON a.acct_no = b.acct_no
+    WHERE SYM_RUN_DATE = (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)
+    UNION ALL 
+    SELECT 
+        a.SYM_RUN_DATE, CN_MOI AS BRANCH_NO , LOAI_KHACHHANG, 'CKH' AS TERM, LOAI_TIEN AS CURRENCY, SODU_QD * RATE AS AMOUNT
+    FROM kmdw.bcqt_huydong a
+    JOIN BCQT_TT_CS_HUYDONG b
+    ON a.acct_no = b.acct_no
+    WHERE SYM_RUN_DATE = (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)),
+C AS (
+    SELECT 
+        SYM_RUN_DATE, BRANCH_NO, BUSINESS_LINE , TERM, CURRENCY, SUM(AMOUNT) AS SODU_QD
+    FROM B
+    GROUP BY SYM_RUN_DATE, BRANCH_NO, BUSINESS_LINE, TERM, CURRENCY),
+HUYDONG_TH AS (
+    SELECT 
+            SYM_RUN_DATE,
+            EXTRACT(YEAR FROM SYM_RUN_DATE) AS YEAR, 
+            EXTRACT(MONTH FROM SYM_RUN_DATE) AS MONTH, 
+            EXTRACT(DAY FROM SYM_RUN_DATE) AS DAY,
+            BRANCH_NO AS CN, BUSINESS_LINE AS LOAI_KHACHHANG, CURRENCY AS LOAI_TIEN, 
+            TERM AS LOAI_KYHAN, SODU_QD/1000000000 AS OUTS_PRINC_CNV
+    FROM C),
+D AS (
+    SELECT 
+        2023 AS YEAR ,MONTH, BRANCH_NO, BUSINESS_LINE, CURRENCY, TERM, TARGET 
+    FROM BCQT_KH_HUYDONG),
+HUYDONG_KH AS (
+    SELECT 
+        YEAR, MONTH, BRANCH_NO, BUSINESS_LINE, CURRENCY, TERM, SUM(TARGET) AS TARGET
+    FROM D
+    GROUP BY YEAR, MONTH, BRANCH_NO, BUSINESS_LINE, CURRENCY, TERM)
+SELECT a.SYM_RUN_DATE, a.YEAR, a.MONTH, a.DAY, a.CN, a.LOAI_KHACHHANG, a.LOAI_TIEN, a.LOAI_KYHAN, OUTS_PRINC_CNV, TARGET
+FROM HUYDONG_TH a
+JOIN HUYDONG_KH b
+ON a.YEAR=b.YEAR
+AND a.MONTH=b.MONTH
+AND a.CN = b.BRANCH_NO
+AND a.LOAI_KHACHHANG = b.BUSINESS_LINE
+AND a.LOAI_TIEN = b.CURRENCY
+AND a.LOAI_KYHAN = b.TERM
+"""
+# Execute the SQL query
+cursor.execute(sql_query)
+# Commit the changes
+connection.commit()
+
+# INSERT DATA VÀO BẢNG CHOVAY_DF
+# Write your SQL query
+sql_query  = """
+INSERT INTO CHOVAY_DF (REPORTING_DATE, YEAR, MONTH, DAY, BRANCH, BUSINESS_LINE, DUNO_QD, TARGET)
+WITH A AS (
+    SELECT
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE,
+        SUM(DUNO_QD) AS DUNO_QD
+    FROM kmdw.bcqt_saoke_duno
+    WHERE SYM_RUN_DATE = (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)
+    GROUP BY
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE
+),
+B AS (
+    SELECT
+        SYM_RUN_DATE,
+        MACN,
+        CASE
+            WHEN GLCODE_TONGHOP LIKE '120%' OR GLCODE_TONGHOP LIKE '113%' THEN
+                CASE
+                    WHEN MACN IN (179, 322) THEN 'Trading'
+                    ELSE 'Banking'
+                END
+            WHEN GLCODE_TONGHOP LIKE '121%' OR GLCODE_TONGHOP LIKE '122%' OR
+                 GLCODE_TONGHOP LIKE '123%' OR GLCODE_TONGHOP LIKE '124%' OR
+                 GLCODE_TONGHOP LIKE '125%' OR GLCODE_TONGHOP LIKE '126%' OR
+                 GLCODE_TONGHOP LIKE '127%' THEN
+                CASE
+                    WHEN MACN = 324 THEN 'THE'
+                    WHEN MACN = 668 THEN 'MUADEE'
+                    WHEN MACN IN (166, 188, 666, 688) THEN 'CIB'
+                    ELSE
+                        CASE
+                            WHEN MACN NOT IN (324, 166, 188, 666, 688, 668) THEN
+                                CASE
+                                    WHEN MUCDICH_VAY = 'TD-The tin dung' AND
+                                         GLCODE_TONGHOP LIKE '1275%' THEN 'THE'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND
+                                         MAJOR_CATEGORY = 'BC' THEN 'CIB'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND
+                                         MAJOR_CATEGORY <> 'BC' AND
+                                         PROFIT_CENTRE = '208' THEN 'CN'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND
+                                         MAJOR_CATEGORY <> 'BC' AND
+                                         PROFIT_CENTRE <> '208' THEN 'SME'
+                                    WHEN LOAIKH IN ('DIN', 'FIN') THEN 'CN'
+                                END
+                            ELSE ''
+                        END
+                END
+            ELSE ''
+        END AS BUSINESS_LINE,
+        DUNO_QD / 1000000000 AS DUNO_QD
+    FROM A),
+C AS (
+    SELECT SYM_RUN_DATE, MACN, BUSINESS_LINE, SUM(DUNO_QD) AS DUNO_QD
+    FROM B
+    GROUP BY SYM_RUN_DATE, MACN, BUSINESS_LINE),
+CHOVAY_TH AS (
+    SELECT 
+        EXTRACT(YEAR FROM SYM_RUN_DATE) AS YEAR,
+        EXTRACT(MONTH FROM SYM_RUN_DATE) AS MONTH,
+        EXTRACT(DAY FROM SYM_RUN_DATE) AS DAY,
+        SYM_RUN_DATE AS REPORTING_DATE, MACN, BUSINESS_LINE, DUNO_QD
+    FROM C),
+D AS (
+    SELECT 
+        2023 AS YEAR, MONTH, BRANCH_NO, BUSINESS_LINE, TARGET
+    FROM BCQT_KH_CHOVAY),
+CHOVAY_KH AS(
+    SELECT 
+        YEAR, MONTH, BRANCH_NO, BUSINESS_LINE, SUM(TARGET) AS TARGET
+    FROM D
+    GROUP BY YEAR, MONTH, BRANCH_NO, BUSINESS_LINE)
+SELECT a.REPORTING_DATE, a.YEAR, a.MONTH, a.DAY, a.MACN AS BRANCH_NO, a.BUSINESS_LINE, a.DUNO_QD, b.TARGET
+FROM CHOVAY_TH a
+JOIN CHOVAY_KH b
+ON a.YEAR=b.YEAR
+AND a.MONTH=b.MONTH
+AND a.MACN = b.BRANCH_NO
+AND a.BUSINESS_LINE = b.BUSINESS_LINE
+"""
+# Execute the SQL query
+cursor.execute(sql_query)
+# Commit the changes
+connection.commit()
+
+# INSERT DATA VÀO BẢNG CHITIETDUNO_DF
+# Write your SQL query
+sql_query  = """
+INSERT INTO CHITIETDUNO (REPORTING_DATE, BRANCH, BUSINESS_LINE, CURRENCY, NHOMNO, DUNO_QD)
+WITH A AS (
+    SELECT
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE,MTK_DINHLUONG,LOAITIEN_VAY,
+        SUM(DUNO_QD) AS DUNO_QD
+    FROM kmdw.bcqt_saoke_duno
+    WHERE SYM_RUN_DATE IN (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)
+    GROUP BY
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE,MTK_DINHLUONG,LOAITIEN_VAY),
+B AS (
+SELECT
+    SYM_RUN_DATE, MACN, LOAITIEN_VAY, SUBSTR(MTK_DINHLUONG,1,1) AS NHOM_NO, 
+    CASE
+        WHEN GLCODE_TONGHOP LIKE '120%' OR
+             GLCODE_TONGHOP LIKE '113%' THEN
+            CASE
+                WHEN MACN IN (179, 322) THEN 'Trading'
+                ELSE 'Banking' 
+            END
+        WHEN GLCODE_TONGHOP LIKE '121%' OR GLCODE_TONGHOP LIKE '122%' OR
+             GLCODE_TONGHOP LIKE '123%' OR GLCODE_TONGHOP LIKE '124%' OR
+             GLCODE_TONGHOP LIKE '125%' OR GLCODE_TONGHOP LIKE '126%' OR
+             GLCODE_TONGHOP LIKE '127%' THEN
+            CASE
+                WHEN MACN = 324 THEN 'THE'
+                WHEN MACN = 668 THEN 'MUADEE'
+                WHEN MACN IN (166, 188, 666, 688) THEN 'CIB'
+                ELSE
+                    CASE
+                        WHEN MACN NOT IN (324, 166, 188, 666, 688, 668) THEN
+                            CASE
+                                WHEN MUCDICH_VAY = 'TD-The tin dung' AND
+                                    GLCODE_TONGHOP LIKE '1275%' THEN 'THE'
+                                WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND 
+                                    MAJOR_CATEGORY = 'BC' THEN 'CIB'
+                                WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND 
+                                    MAJOR_CATEGORY <> 'BC' AND
+                                    PROFIT_CENTRE = '208' THEN 'CN'
+                                WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND
+                                    MAJOR_CATEGORY <> 'BC' AND
+                                    PROFIT_CENTRE <> '208' THEN 'SME'
+                                WHEN LOAIKH IN ('DIN', 'FIN') THEN 'CN'
+                            END
+                        ELSE ''
+                    END
+            END
+        ELSE ''
+    END AS BUSINESS_LINE,
+    DUNO_QD/1000000000 AS DUNO_QD
+FROM A)
+SELECT SYM_RUN_DATE AS REPORTING_DATE, MACN AS BRANCH_NO, LOAITIEN_VAY AS CURRENCY, NHOM_NO, BUSINESS_LINE, SUM(DUNO_QD) AS DUNO_QD
+FROM B
+GROUP BY SYM_RUN_DATE, MACN, LOAITIEN_VAY, NHOM_NO, BUSINESS_LINE
+"""
+# Execute the SQL query
+cursor.execute(sql_query)
+# Commit the changes
+connection.commit()
+
+# INSERT DATA VÀO BẢNG NHOMNO_DF
+# Write your SQL query
+sql_query  = """
+INSERT INTO NHOMNO_DF (REPORTING_DATE, BRANCH, BUSINESS_LINE, TYPE, YEAR, MONTH, DAY, DUNO_QD)
+WITH A AS (
+    SELECT
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE,MTK_DINHLUONG,LOAITIEN_VAY,
+        SUM(DUNO_QD) AS DUNO_QD
+    FROM kmdw.bcqt_saoke_duno
+    WHERE SYM_RUN_DATE IN (SELECT MAX(SYM_RUN_DATE) FROM kmdw.bcqt_huydong)
+    GROUP BY
+        SYM_RUN_DATE,MACN,GLCODE_TONGHOP,MUCDICH_VAY,LOAIKH,MAJOR_CATEGORY,PROFIT_CENTRE,MTK_DINHLUONG,LOAITIEN_VAY
+),
+B AS (
+    SELECT
+        SYM_RUN_DATE, MACN, LOAITIEN_VAY, SUBSTR(MTK_DINHLUONG,1,1) AS NHOM_NO, 
+        CASE
+            WHEN GLCODE_TONGHOP LIKE '120%' OR
+                 GLCODE_TONGHOP LIKE '113%' THEN
+                CASE
+                    WHEN MACN IN (179, 322) THEN 'Trading'
+                    ELSE 'Banking' 
+                END
+            WHEN GLCODE_TONGHOP LIKE '121%' OR GLCODE_TONGHOP LIKE '122%' OR
+                 GLCODE_TONGHOP LIKE '123%' OR GLCODE_TONGHOP LIKE '124%' OR
+                 GLCODE_TONGHOP LIKE '125%' OR GLCODE_TONGHOP LIKE '126%' OR
+                 GLCODE_TONGHOP LIKE '127%' THEN
+                CASE
+                    WHEN MACN = 324 THEN 'THE'
+                    WHEN MACN = 668 THEN 'MUADEE'
+                    WHEN MACN IN (166, 188, 666, 688) THEN 'CIB'
+                    ELSE
+                        CASE
+                            WHEN MACN NOT IN (324, 166, 188, 666, 688, 668) THEN
+                                CASE
+                                    WHEN MUCDICH_VAY = 'TD-The tin dung' AND
+                                        GLCODE_TONGHOP LIKE '1275%' THEN 'THE'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND 
+                                        MAJOR_CATEGORY = 'BC' THEN 'CIB'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND 
+                                        MAJOR_CATEGORY <> 'BC' AND
+                                        PROFIT_CENTRE = '208' THEN 'CN'
+                                    WHEN LOAIKH IN ('DCO', 'FCO', 'DFI') AND
+                                        MAJOR_CATEGORY <> 'BC' AND
+                                        PROFIT_CENTRE <> '208' THEN 'SME'
+                                    WHEN LOAIKH IN ('DIN', 'FIN') THEN 'CN'
+                                END
+                            ELSE ''
+                        END
+                END
+            ELSE ''
+        END AS BUSINESS_LINE,
+        DUNO_QD/1000000000 AS DUNO_QD
+    FROM A),
+C AS (
+    SELECT 
+        SYM_RUN_DATE AS REPORTING_DATE, MACN AS BRANCH_NO, LOAITIEN_VAY AS CURRENCY, NHOM_NO, BUSINESS_LINE, SUM(DUNO_QD) AS DUNO_QD
+    FROM B
+    GROUP BY SYM_RUN_DATE, MACN, LOAITIEN_VAY, NHOM_NO, BUSINESS_LINE),
+D AS (
+    SELECT REPORTING_DATE,BRANCH_NO,CURRENCY,BUSINESS_LINE,
+        CASE 
+            WHEN NHOM_NO = 1 THEN 'N1'
+            WHEN NHOM_NO = 2 THEN 'N2'
+            ELSE 'N345' END AS TYPE, DUNO_QD
+    FROM C),
+E AS (
+SELECT 
+    REPORTING_DATE,BRANCH_NO,CURRENCY,BUSINESS_LINE,TYPE,SUM(DUNO_QD) AS DUNO_QD
+FROM D
+GROUP BY REPORTING_DATE,BRANCH_NO,CURRENCY,BUSINESS_LINE,TYPE)
+SELECT 
+    REPORTING_DATE, BRANCH_NO, BUSINESS_LINE, TYPE,
+    EXTRACT(YEAR FROM REPORTING_DATE) AS YEAR,
+    EXTRACT(MONTH FROM REPORTING_DATE) AS MONTH,
+    EXTRACT(DAY FROM REPORTING_DATE) AS DAY,
+    DUNO_QD
+FROM E
+"""
+# Execute the SQL query
+cursor.execute(sql_query)
+# Commit the changes
+connection.commit()
+
+# Close the cursor and database connection
+cursor.close()
+connection.close()
+
+print("your data is inserted into tables")
